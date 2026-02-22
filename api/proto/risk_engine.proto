@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package riskengine;
+
+// Шлях, куди згенерується код
+option go_package = "github.com/tokyosplif/ai-risk-engine/pkg/pb";
+
+service RiskEngineService {
+  // Метод для аналізу транзакції
+  rpc AnalyzeTransaction (AnalyzeRequest) returns (AnalyzeResponse);
+}
+
+message AnalyzeRequest {
+  string transaction_id = 1;
+  string user_id = 2;
+  double amount = 3;
+  string merchant = 4;
+  string location = 5;
+  string user_profile_context = 6;
+}
+
+message AnalyzeResponse {
+  bool is_blocked = 1;
+  string reason = 2;
+  string ai_push_msg = 3;
+}
