@@ -1,0 +1,12 @@
+/risk-engine
+/bin/
+
+.env
+*.env.local
+
+/vendor/
+
+*.log
+
+.idea/
+.vscode/
