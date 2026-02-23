@@ -10,6 +10,20 @@ import (
 	"github.com/tokyosplif/ai-risk-engine/internal/domain"
 )
 
+const (
+	lowValueThreshold        = 500.0
+	heuristicBlockMinAmount  = 500.0
+	heuristicBlockMultiplier = 2.0
+	highValueThreshold       = 10000.0
+	highConfidenceThreshold  = 75
+	lowConfidenceThreshold   = 30
+)
+
+var (
+	amountRegex = regexp.MustCompile(`Amount:?\s*([0-9]+(\.[0-9]+)?)`)
+	maxTxRegex  = regexp.MustCompile(`MaxTx:?\s*([0-9]+(\.[0-9]+)?)`)
+)
+
 type LLMClient interface {
 	Analyze(ctx context.Context, txData string, userProfile string) (domain.RiskAssessment, error)
 }
@@ -25,52 +39,53 @@ func NewAnalyzer(llm LLMClient) *Analyzer {
 func (a *Analyzer) ProcessAnalysis(ctx context.Context, txData, userProfile string) (domain.RiskAssessment, error) {
 	assessment, err := a.llm.Analyze(ctx, txData, userProfile)
 	if err != nil {
-		return domain.RiskAssessment{IsBlocked: false, Reason: "fail-safe: ai error"}, nil
+		return domain.RiskAssessment{IsBlocked: false, Reason: "fail-safe: ai service unavailable"}, nil
 	}
 
 	amount := extractAmount(txData)
 	maxTx := extractMaxTx(userProfile)
 
-	if amount < 500 && assessment.IsBlocked && strings.Contains(strings.ToLower(assessment.Reason), "amount") {
+	if amount < lowValueThreshold && assessment.IsBlocked && strings.Contains(strings.ToLower(assessment.Reason), "amount") {
 		assessment.IsBlocked = false
-		assessment.Reason = "[Low Value Pass] " + assessment.Reason
+		assessment.Reason = addTag(assessment.Reason, "[Low Value Pass]")
 		return assessment, nil
 	}
 
-	if maxTx > 0 && amount > maxTx*2 && amount > 500 {
+	if maxTx > 0 && amount > maxTx*heuristicBlockMultiplier && amount > heuristicBlockMinAmount {
 		assessment.IsBlocked = true
-		assessment.Reason = fmt.Sprintf("[Heuristic Block] Transaction amount (%.2f) exceeds historical max (%.2f) significantly", amount, maxTx)
+		assessment.Reason = addTag(assessment.Reason, fmt.Sprintf("[Heuristic Block] Amount (%.2f) exceeds historical max (%.2f).", amount, maxTx))
 		return assessment, nil
 	}
 
-	if amount > 5000 && assessment.ConfidenceScore > 85 && !assessment.IsBlocked {
-		assessment.Reason = "[High Value Approved] " + assessment.Reason
-		return assessment, nil
-	}
-
-	if amount > 10000 && assessment.ConfidenceScore <= 75 {
+	if amount > highValueThreshold && assessment.ConfidenceScore <= highConfidenceThreshold {
 		assessment.IsBlocked = false
-		assessment.Reason = "[PENDING REVIEW] High value anomaly detected: " + assessment.Reason
+		assessment.Reason = addTag(assessment.Reason, "[PENDING REVIEW]")
 		return assessment, nil
 	}
 
 	switch {
-	case assessment.ConfidenceScore <= 30:
+	case assessment.ConfidenceScore <= lowConfidenceThreshold:
 		assessment.IsBlocked = false
-		assessment.Reason = "[Low Confidence] " + assessment.Reason
-	case assessment.ConfidenceScore <= 75:
+		assessment.Reason = addTag(assessment.Reason, "[Low Confidence Ignore]")
+	case assessment.ConfidenceScore <= highConfidenceThreshold:
 		if assessment.IsBlocked {
 			assessment.IsBlocked = false
-			assessment.Reason = "[PENDING REVIEW] " + assessment.Reason
+			assessment.Reason = addTag(assessment.Reason, "[PENDING REVIEW]")
 		}
 	}
 
 	return assessment, nil
 }
 
+func addTag(reason, tag string) string {
+	if strings.Contains(reason, tag) {
+		return reason
+	}
+	return tag + " " + reason
+}
+
 func extractAmount(data string) float64 {
-	re := regexp.MustCompile(`Amount:?\s*([0-9]+(\.[0-9]+)?)`)
-	matches := re.FindStringSubmatch(data)
+	matches := amountRegex.FindStringSubmatch(data)
 	if len(matches) > 1 {
 		val, _ := strconv.ParseFloat(matches[1], 64)
 		return val
@@ -79,8 +94,7 @@ func extractAmount(data string) float64 {
 }
 
 func extractMaxTx(profile string) float64 {
-	re := regexp.MustCompile(`MaxTx:?\s*([0-9]+(\.[0-9]+)?)`)
-	matches := re.FindStringSubmatch(profile)
+	matches := maxTxRegex.FindStringSubmatch(profile)
 	if len(matches) > 1 {
 		val, _ := strconv.ParseFloat(matches[1], 64)
 		return val
