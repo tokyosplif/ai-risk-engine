@@ -2,11 +2,9 @@ syntax = "proto3";
 
 package riskengine;
 
-// Шлях, куди згенерується код
 option go_package = "github.com/tokyosplif/ai-risk-engine/pkg/pb";
 
 service RiskEngineService {
-  // Метод для аналізу транзакції
   rpc AnalyzeTransaction (AnalyzeRequest) returns (AnalyzeResponse);
 }
 
