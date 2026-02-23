@@ -20,7 +20,6 @@ WORKDIR /app
 RUN adduser -D appuser
 
 COPY --from=builder /bin/risk-engine .
-
 COPY prompts.json .
 
 RUN chown appuser:appuser /app/prompts.json
