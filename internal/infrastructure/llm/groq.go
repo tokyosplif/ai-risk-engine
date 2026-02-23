@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/sashabaranov/go-openai"
+	"github.com/tokyosplif/ai-risk-engine/internal/config"
 	"github.com/tokyosplif/ai-risk-engine/internal/domain"
 )
 
@@ -21,39 +24,92 @@ type PromptConfig struct {
 type GroqClient struct {
 	client  *openai.Client
 	model   string
+	mu      sync.RWMutex
 	prompts map[string]PromptConfig
 }
 
-func NewGroqClient(apiKey string) *GroqClient {
-	config := openai.DefaultConfig(apiKey)
-	config.BaseURL = "https://api.groq.com/openai/v1"
+func NewGroqClient(cfg config.GroqConfig, promptsPath string) *GroqClient {
+	openaiCfg := openai.DefaultConfig(cfg.APIKey)
+	openaiCfg.BaseURL = cfg.BaseURL
 
 	gc := &GroqClient{
-		client:  openai.NewClientWithConfig(config),
-		model:   "llama-3.3-70b-versatile",
+		client:  openai.NewClientWithConfig(openaiCfg),
+		model:   cfg.Model,
 		prompts: make(map[string]PromptConfig),
 	}
 
-	gc.loadPrompts()
+	gc.loadPrompts(promptsPath)
+
+	go gc.WatchPrompts(promptsPath)
+
 	return gc
 }
 
-func (g *GroqClient) loadPrompts() {
-	data, err := os.ReadFile("prompts.json")
+func (g *GroqClient) loadPrompts(path string) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		slog.Error("failed to load prompts.json", "err", err)
+		slog.Error("failed to load prompts file", "path", path, "err", err)
 		return
 	}
 
-	if err := json.Unmarshal(data, &g.prompts); err != nil {
-		slog.Error("failed to parse prompts.json", "err", err)
+	var newPrompts map[string]PromptConfig
+	if err := json.Unmarshal(data, &newPrompts); err != nil {
+		slog.Error("failed to parse prompts json", "err", err)
 		return
 	}
-	slog.Info("ai prompts loaded", "count", len(g.prompts))
+
+	g.mu.Lock()
+	g.prompts = newPrompts
+	g.mu.Unlock()
+
+	slog.Debug("ai prompts loaded/reloaded", "count", len(newPrompts))
+}
+
+func (g *GroqClient) WatchPrompts(path string) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		slog.Error("failed to create watcher", "err", err)
+		return
+	}
+
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			slog.Error("failed to close watcher", "err", err)
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Op&fsnotify.Write == fsnotify.Write {
+					slog.Info("Detected change in prompts file, reloading...", "path", path)
+					g.loadPrompts(path)
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				slog.Error("watcher error", "err", err)
+			}
+		}
+	}()
+
+	if err := watcher.Add(path); err != nil {
+		slog.Error("failed to add file to watcher", "path", path, "err", err)
+	}
+
+	select {}
 }
 
 func (g *GroqClient) buildPrompt(version string, userProfile string) string {
+	g.mu.RLock()
 	p, ok := g.prompts[version]
+	g.mu.RUnlock()
+
 	if !ok {
 		return "Analyze for fraud. Return JSON."
 	}
@@ -104,10 +160,6 @@ func (g *GroqClient) Analyze(ctx context.Context, txData string, userProfile str
 		}
 	}
 
-	slog.Info("risk analysis complete",
-		"blocked", res.IsBlocked,
-		"reason", res.Reason,
-	)
-
+	slog.Debug("risk analysis complete", "blocked", res.IsBlocked, "reason", res.Reason)
 	return res, nil
 }
