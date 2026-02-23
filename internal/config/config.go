@@ -6,6 +6,7 @@ import (
 
 type Config struct {
 	Port        string
+	LogLevel    string
 	Groq        GroqConfig
 	PromptsPath string
 }
@@ -19,6 +20,7 @@ type GroqConfig struct {
 func Load() *Config {
 	return &Config{
 		Port:        getEnv("PORT", ":50051"),
+		LogLevel:    getEnv("LOG_LEVEL", "info"),
 		PromptsPath: getEnv("PROMPTS_PATH", "prompts.json"),
 		Groq: GroqConfig{
 			APIKey:  os.Getenv("GROQ_API_KEY"),
