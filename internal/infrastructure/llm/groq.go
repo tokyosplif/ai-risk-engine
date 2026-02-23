@@ -8,12 +8,16 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/sashabaranov/go-openai"
 	"github.com/tokyosplif/ai-risk-engine/internal/config"
 	"github.com/tokyosplif/ai-risk-engine/internal/domain"
+	"github.com/tokyosplif/ai-risk-engine/pkg/closer"
 )
+
+const DefaultLLMTimeout = 15 * time.Second
 
 type PromptConfig struct {
 	SystemRole        string   `json:"system_role"`
@@ -40,7 +44,7 @@ func NewGroqClient(cfg config.GroqConfig, promptsPath string) *GroqClient {
 
 	gc.loadPrompts(promptsPath)
 
-	go gc.WatchPrompts(promptsPath)
+	go gc.WatchPrompts(context.Background(), promptsPath)
 
 	return gc
 }
@@ -65,18 +69,17 @@ func (g *GroqClient) loadPrompts(path string) {
 	slog.Debug("ai prompts loaded/reloaded", "count", len(newPrompts))
 }
 
-func (g *GroqClient) WatchPrompts(path string) {
+func (g *GroqClient) WatchPrompts(ctx context.Context, path string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		slog.Error("failed to create watcher", "err", err)
 		return
 	}
 
-	defer func() {
-		if err := watcher.Close(); err != nil {
-			slog.Error("failed to close watcher", "err", err)
-		}
-	}()
+	defer closer.Close(watcher, "fsnotify watcher")
+
+	events := make(chan fsnotify.Event)
+	errs := make(chan error)
 
 	go func() {
 		for {
@@ -85,24 +88,35 @@ func (g *GroqClient) WatchPrompts(path string) {
 				if !ok {
 					return
 				}
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					slog.Info("Detected change in prompts file, reloading...", "path", path)
-					g.loadPrompts(path)
-				}
-			case err, ok := <-watcher.Errors:
+				events <- event
+			case e, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				slog.Error("watcher error", "err", err)
+				errs <- e
 			}
 		}
 	}()
 
 	if err := watcher.Add(path); err != nil {
 		slog.Error("failed to add file to watcher", "path", path, "err", err)
+		return
 	}
 
-	select {}
+	for {
+		select {
+		case event := <-events:
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				slog.Info("Detected change in prompts file, reloading...", "path", path)
+				g.loadPrompts(path)
+			}
+		case e := <-errs:
+			slog.Error("watcher error", "err", e)
+		case <-ctx.Done():
+			slog.Debug("stopping prompts watcher", "path", path)
+			return
+		}
+	}
 }
 
 func (g *GroqClient) buildPrompt(version string, userProfile string) string {
@@ -120,6 +134,9 @@ func (g *GroqClient) buildPrompt(version string, userProfile string) string {
 }
 
 func (g *GroqClient) Analyze(ctx context.Context, txData string, userProfile string) (domain.RiskAssessment, error) {
+	ctx, cancel := context.WithTimeout(ctx, DefaultLLMTimeout)
+	defer cancel()
+
 	systemPrompt := g.buildPrompt("antifraud_v1", userProfile)
 
 	resp, err := g.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -139,7 +156,17 @@ func (g *GroqClient) Analyze(ctx context.Context, txData string, userProfile str
 		return domain.RiskAssessment{}, err
 	}
 
+	if len(resp.Choices) == 0 {
+		slog.Error("ai provider returned empty choices")
+		return domain.RiskAssessment{}, fmt.Errorf("empty choices from ai provider")
+	}
+
 	content := resp.Choices[0].Message.Content
+	if strings.TrimSpace(content) == "" {
+		slog.Error("ai provider returned empty content in choice")
+		return domain.RiskAssessment{}, fmt.Errorf("empty content from ai provider")
+	}
+
 	var res domain.RiskAssessment
 
 	if err := json.Unmarshal([]byte(content), &res); err != nil {
