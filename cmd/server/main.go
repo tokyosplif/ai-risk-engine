@@ -10,20 +10,19 @@ import (
 )
 
 func main() {
-	logger.Setup()
-
-	if err := godotenv.Load(); err != nil {
-		slog.Debug(".env not found, using system environment variables")
-	}
-
+	_ = godotenv.Load()
 	cfg := config.Load()
 
+	logger.Setup(cfg.LogLevel)
+
 	if cfg.Groq.APIKey == "" {
-		slog.Error("CRITICAL: GROQ_API_KEY is empty. AI features will not work.")
+		slog.Error("CRITICAL: GROQ_API_KEY is missing")
 		return
 	}
 
+	slog.Info("Starting AI Risk Engine", "env", "prod", "model", cfg.Groq.Model)
+
 	if err := app.RunServer(cfg); err != nil {
-		slog.Error("Server failed to start", "error", err)
+		slog.Error("Application failed", "error", err)
 	}
 }
