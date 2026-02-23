@@ -1,40 +1,33 @@
-# AI Risk Engine
+# 🧠 AI Risk Engine
 
-The AI Risk Engine is a specialized microservice designed for intelligent transaction scoring and contextual fraud analysis. By combining the reasoning capabilities of Large Language Models (LLMs) with a high-performance heuristic safety layer, it provides sophisticated protection against complex fraud schemes.
+The AI Risk Engine is a specialized microservice designed for intelligent transaction scoring and contextual fraud analysis. By combining the reasoning capabilities of Large Language Models (LLMs) with a high-performance, deterministic Go heuristic layer, it provides sophisticated protection against complex fraud schemes.
 
-## Key Features
-- **Hot-Reloadable Prompts:** Uses fsnotify to watch prompts.json for changes. Business rules, security protocols, and few-shot examples can be updated instantly without service restarts or recompilation.
-- **Hybrid Analysis Pipeline:** Implements a dual-layer decision engine that correlates LLM reasoning with hard-coded heuristic safety checks.
-- **Deterministic AI Verdicts:** Utilizes the `llama-3.3-70b-versatile` model with a temperature of 0.1 and JSON-mode forced output for consistent, reliable financial assessments.
-- **Cold Start Adaptation:** Intelligently handles new users with zero transaction history, preventing false positives for low-value local purchases.
+## 🌟 Key Features
+* **Hybrid Analysis Pipeline:** Implements a dual-layer decision engine that correlates LLM reasoning with hard-coded heuristic safety checks (Business Rules Abstraction).
+* **Deterministic AI Verdicts:** Utilizes the `llama-3.3-70b-versatile` model with a temperature of `0.1` and forced JSON-mode output for consistent, reliable financial assessments.
+* **Idempotent Tagging:** Automatically normalizes AI outputs, ensuring alert tags (e.g., `[PENDING REVIEW]`) are applied cleanly without duplication.
+* **Hot-Reloadable Prompts:** Uses `fsnotify` to watch `prompts.json` for changes. Business rules, security protocols, and few-shot examples can be updated instantly without service restarts or recompilation.
 
-## Architecture & Logic
-1. **The Analyzer (Heuristic Layer)**
-The engine applies a multi-stage validation process to every AI verdict:
+## ⚙️ Architecture & Logic
 
-- **Cold Start Protection:** Automatically overrides AI blocks for transactions under $500 if the user has no history (MaxTx: 0) and the merchant is local.
-- **Strict Anomaly Blocking:** Forces a block if a transaction exceeds $500 AND is more than 2x the user's historical maximum.
-- **Confidence Mapping:**
-  - High Confidence (>85%): Grants "VIP Trust" to high-value transactions approved by AI.
-  - Medium Confidence (31–75%): Downgrades "Block" verdicts to [PENDING REVIEW] to prevent aggressive false positives.
-  - Low Confidence (≤30%): Automatically treats the verdict as non-blocking.
+### The Analyzer (Heuristic Layer)
+The engine applies a multi-stage validation process to every AI verdict. All magic numbers are extracted into business-rule constants for easy tuning:
+1. **Low Value Pass (`< $500`):** Automatically overrides AI blocks for minor transactions, preventing false positives for everyday purchases.
+2. **Strict Anomaly Blocking:** Forces a `[Heuristic Block]` if a transaction exceeds $500 AND is more than 2x the user's historical maximum, protecting compromised accounts.
+3. **Confidence Mapping:**
+   * **High Confidence (>75%):** Trusts the AI's verdict entirely.
+   * **Medium Confidence (31–75%):** Downgrades "Block" verdicts on massive amounts (`> $10,000`) to `[PENDING REVIEW]` to prevent aggressive false positives while alerting human operators.
+   * **Low Confidence (≤30%):** Automatically treats the verdict as non-blocking (`[Low Confidence Ignore]`).
 
-2. **Prompt Management (prompts.json)**
+### Prompt Management (`prompts.json`)
 The system's "intelligence" is externalized into a dynamic configuration:
+* **Historical Context:** Instructs the AI to normalize behavior for users with zero-stats (Cold Start).
+* **Crypto/P2P Policy:** Specific protocols for high-risk merchants (e.g., Binance, Coinbase), requiring both high amounts and geographic anomalies for a block.
+* **Few-Shot Examples:** Includes training pairs in the prompt to ensure the AI understands the difference between a "Safe Cold Start" and a "High-Value Mismatch."
 
-- **Historical Context:** Instructs the AI to normalize behavior for users with zero-stats.
-- **Crypto/P2P Policy:** Specific protocols for high-risk merchants (e.g., Binance, Coinbase), requiring both high amounts (>$1000) and geographic anomalies for a block.
-- **Few-Shot Examples:** Includes training pairs in the prompt to ensure the AI understands the difference between a "Safe Cold Start" and a "Lagos High-Value Mismatch."
-
-## Security Protocols (Antifraud Engine)
-The AI is explicitly instructed to follow these prioritized rules:
-
-- **Normalization:** Transactions matching local geography (e.g., Lviv, Kyiv) and standard merchants (e.g., Supermarkets) are marked as NORMAL even if they slightly exceed averages.
-- **High-Value Buffer:** Transactions > $10,000 with consistent locations are flagged for PENDING REVIEW rather than immediate blocking.
-- **Critical Mismatch:** Only triggers is_blocked: true when there is a 75%+ fraud probability, such as a geographic mismatch combined with an unknown offshore merchant.
-
-## Technical Specifications
-- **Communication:** gRPC for low-latency inter-service calls.
-- **Language:** Go 1.25.
-- **AI Provider:** Groq/OpenAI compatible API.
-- **Logging:** Structured JSON (slog) including pattern-matching alerts for heuristic triggers (e.g., "binance", "nigeria", "anomaly").
+## 🛠️ Technical Specifications
+* **Communication:** gRPC for low-latency inter-service calls with built-in retries and timeouts.
+* **Language:** Go 1.25.
+* **AI Provider:** Groq / OpenAI compatible API.
+* **Testing:** Fully testable architecture using Mock LLM clients to validate heuristic edge cases without hitting external APIs.
+* **Logging:** Structured JSON logging (`slog`) with dynamic log-level configuration.
