@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -17,7 +18,12 @@ import (
 	"github.com/tokyosplif/ai-risk-engine/pkg/closer"
 )
 
-const DefaultLLMTimeout = 15 * time.Second
+const (
+	DefaultLLMTimeout = 15 * time.Second
+	maxIdleConns      = 50
+	idleConnTimeout   = 30 * time.Second
+	llmTemperature    = 0.1
+)
 
 type PromptConfig struct {
 	SystemRole        string   `json:"system_role"`
@@ -35,6 +41,15 @@ type GroqClient struct {
 func NewGroqClient(cfg config.GroqConfig, promptsPath string) *GroqClient {
 	openaiCfg := openai.DefaultConfig(cfg.APIKey)
 	openaiCfg.BaseURL = cfg.BaseURL
+
+	openaiCfg.HTTPClient = &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        maxIdleConns,
+			MaxIdleConnsPerHost: maxIdleConns,
+			IdleConnTimeout:     idleConnTimeout,
+			DisableCompression:  true,
+		},
+	}
 
 	gc := &GroqClient{
 		client:  openai.NewClientWithConfig(openaiCfg),
@@ -148,7 +163,7 @@ func (g *GroqClient) Analyze(ctx context.Context, txData string, userProfile str
 		ResponseFormat: &openai.ChatCompletionResponseFormat{
 			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
 		},
-		Temperature: 0.1,
+		Temperature: llmTemperature,
 	})
 
 	if err != nil {
